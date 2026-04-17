@@ -58,6 +58,8 @@ function roundRect(
 }
 
 /** Total grid height (before clamping to viewport). */
+const SCROLL_PADDING = 80;
+
 function gridHeight(): number {
   const steps = state.totalSteps;
   let h = STEP_LABEL_HEIGHT;
@@ -65,7 +67,7 @@ function gridHeight(): number {
     h += CELL_SIZE + CELL_GAP;
     if (s > 0 && s % STANZA_SIZE === 0) h += STANZA_GAP - CELL_GAP;
   }
-  return h;
+  return h + SCROLL_PADDING;
 }
 
 /** Y offset for a given step row. */
@@ -128,16 +130,28 @@ function render(ctx: CanvasRenderingContext2D, rect: Rect): void {
     ctx.fillRect(0, y0, gridWidth(), y1 - y0);
   }
 
-  // Track labels (top row)
-  ctx.font = '600 11px system-ui, -apple-system, sans-serif';
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
+  // Track label buttons (top row)
   const trackCount = state.tracks.length;
   for (let t = 0; t < trackCount; t++) {
-    ctx.fillStyle = TRACK_COLORS[t];
+    const tx = trackX(t);
+    const trackColor = TRACK_COLORS[t % TRACK_COLORS.length];
+
+    ctx.fillStyle = trackColor + '20';
+    roundRect(ctx, tx, 2, CELL_SIZE, STEP_LABEL_HEIGHT - 4, CELL_RADIUS);
+    ctx.fill();
+
+    ctx.strokeStyle = trackColor;
+    ctx.lineWidth = 1;
+    roundRect(ctx, tx, 2, CELL_SIZE, STEP_LABEL_HEIGHT - 4, CELL_RADIUS);
+    ctx.stroke();
+
+    ctx.fillStyle = trackColor;
+    ctx.font = '600 11px system-ui, -apple-system, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
     ctx.fillText(
       state.tracks[t]?.name ?? `T${t + 1}`,
-      trackX(t) + CELL_SIZE / 2,
+      tx + CELL_SIZE / 2,
       STEP_LABEL_HEIGHT / 2,
     );
   }

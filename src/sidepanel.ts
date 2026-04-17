@@ -3,10 +3,6 @@ import { synths, SYNTH_TYPES, swapSynth, getSynthType, getEnvelope, setEnvelope 
 import type { SynthTypeId } from './scheduler.ts';
 import { Renderer } from './renderer.ts';
 
-// ---------------------------------------------------------------------------
-// Preset storage
-// ---------------------------------------------------------------------------
-
 const PRESET_KEY = 'step-sequencer-presets';
 const TRACK_KEY = 'step-sequencer-tracks';
 
@@ -17,11 +13,7 @@ interface Preset {
 }
 
 function loadPresets(): Preset[] {
-  try {
-    return JSON.parse(localStorage.getItem(PRESET_KEY) ?? '[]');
-  } catch {
-    return [];
-  }
+  try { return JSON.parse(localStorage.getItem(PRESET_KEY) ?? '[]'); } catch { return []; }
 }
 
 function savePresets(presets: Preset[]): void {
@@ -29,11 +21,7 @@ function savePresets(presets: Preset[]): void {
 }
 
 function loadSavedTracks(): string[] {
-  try {
-    return JSON.parse(localStorage.getItem(TRACK_KEY) ?? '[]');
-  } catch {
-    return [];
-  }
+  try { return JSON.parse(localStorage.getItem(TRACK_KEY) ?? '[]'); } catch { return []; }
 }
 
 function saveTrackList(names: string[]): void {
@@ -45,11 +33,15 @@ function getTrackData(trackName: string): string | null {
 }
 
 // ---------------------------------------------------------------------------
-// Build sidepanel
+// Build
 // ---------------------------------------------------------------------------
 
 export function buildSidepanel(container: HTMLElement): void {
   container.innerHTML = '';
+
+  const handle = document.createElement('div');
+  handle.id = 'panel-handle';
+  container.appendChild(handle);
 
   const tracksSection = document.createElement('div');
   tracksSection.className = 'sp-section';
@@ -59,8 +51,9 @@ export function buildSidepanel(container: HTMLElement): void {
     tracksSection.appendChild(buildTrackCard(t));
   }
   container.appendChild(tracksSection);
-
   container.appendChild(buildSaveLoadSection());
+
+  Renderer.resize();
 }
 
 function buildTrackCard(trackIndex: number): HTMLElement {
@@ -79,18 +72,34 @@ function buildTrackCard(trackIndex: number): HTMLElement {
   name.className = 'sp-track-name';
   name.textContent = track.name;
 
+  const chevron = document.createElement('span');
+  chevron.className = 'sp-track-chevron';
+  chevron.textContent = '▶';
+
   header.appendChild(dot);
   header.appendChild(name);
+  header.appendChild(chevron);
+
+  header.addEventListener('click', () => {
+    const isCardOpen = card.classList.contains('open');
+    const allCards = card.parentElement?.querySelectorAll('.sp-track');
+    if (allCards) {
+      for (const c of allCards) c.classList.remove('open');
+    }
+    if (!isCardOpen) card.classList.add('open');
+  });
+
   card.appendChild(header);
+
+  const body = document.createElement('div');
+  body.className = 'sp-track-body';
 
   const currentType = getSynthType(trackIndex);
 
   const synthField = document.createElement('div');
   synthField.className = 'sp-field';
-
   const synthLabel = document.createElement('label');
   synthLabel.textContent = 'Type';
-
   const synthSelect = document.createElement('select');
   for (const st of SYNTH_TYPES) {
     const opt = document.createElement('option');
@@ -100,23 +109,21 @@ function buildTrackCard(trackIndex: number): HTMLElement {
     synthSelect.appendChild(opt);
   }
   synthSelect.addEventListener('change', () => {
-    const newType = synthSelect.value as SynthTypeId;
-    swapSynth(trackIndex, newType);
-    rebuildEnvelopeSliders(card, trackIndex);
+    swapSynth(trackIndex, synthSelect.value as SynthTypeId);
+    rebuildEnvelopeSliders(body, trackIndex);
   });
-
   synthField.appendChild(synthLabel);
   synthField.appendChild(synthSelect);
-  card.appendChild(synthField);
+  body.appendChild(synthField);
 
   const env = getEnvelope(trackIndex);
-  card.appendChild(makeSlider(trackIndex, 'Attack', 'attack', env.attack, 0, 1, 0.001));
-  card.appendChild(makeSlider(trackIndex, 'Decay', 'decay', env.decay, 0.001, 2, 0.001));
-  card.appendChild(makeSlider(trackIndex, 'Sustain', 'sustain', env.sustain, 0, 1, 0.01));
-  card.appendChild(makeSlider(trackIndex, 'Release', 'release', env.release, 0.001, 2, 0.001));
+  body.appendChild(makeSlider(trackIndex, 'Attack', 'attack', env.attack, 0, 1, 0.001));
+  body.appendChild(makeSlider(trackIndex, 'Decay', 'decay', env.decay, 0.001, 2, 0.001));
+  body.appendChild(makeSlider(trackIndex, 'Sustain', 'sustain', env.sustain, 0, 1, 0.01));
+  body.appendChild(makeSlider(trackIndex, 'Release', 'release', env.release, 0.001, 2, 0.001));
+  body.appendChild(buildPresetRow(trackIndex));
 
-  card.appendChild(buildPresetRow(trackIndex));
-
+  card.appendChild(body);
   return card;
 }
 
@@ -154,17 +161,16 @@ function makeSlider(trackIndex: number, label: string, param: string, value: num
   return field;
 }
 
-function rebuildEnvelopeSliders(card: HTMLElement, trackIndex: number): void {
+function rebuildEnvelopeSliders(body: HTMLElement, trackIndex: number): void {
   const env = getEnvelope(trackIndex);
   const params = [
-    { label: 'Attack', param: 'attack', min: 0, max: 1, step: 0.001 },
-    { label: 'Decay', param: 'decay', min: 0.001, max: 2, step: 0.001 },
-    { label: 'Sustain', param: 'sustain', min: 0, max: 1, step: 0.01 },
-    { label: 'Release', param: 'release', min: 0.001, max: 2, step: 0.001 },
+    { param: 'attack', min: 0, max: 1, step: 0.001 },
+    { param: 'decay', min: 0.001, max: 2, step: 0.001 },
+    { param: 'sustain', min: 0, max: 1, step: 0.01 },
+    { param: 'release', min: 0.001, max: 2, step: 0.001 },
   ];
-
   for (const p of params) {
-    const field = card.querySelector(`[data-env-param="${p.param}"]`);
+    const field = body.querySelector(`[data-env-param="${p.param}"]`);
     if (!field) continue;
     const input = field.querySelector('input') as HTMLInputElement;
     const valSpan = field.querySelector('.sp-val') as HTMLElement;
@@ -181,8 +187,7 @@ function buildPresetRow(trackIndex: number): HTMLElement {
   const row = document.createElement('div');
   row.className = 'sp-presets';
 
-  const presets = loadPresets();
-  for (const p of presets) {
+  for (const p of loadPresets()) {
     const btn = document.createElement('button');
     btn.type = 'button';
     btn.textContent = p.name;
@@ -192,7 +197,7 @@ function buildPresetRow(trackIndex: number): HTMLElement {
       const card = row.closest('.sp-track') as HTMLElement;
       const select = card.querySelector('select') as HTMLSelectElement;
       select.value = p.synthType;
-      rebuildEnvelopeSliders(card, trackIndex);
+      rebuildEnvelopeSliders(row.closest('.sp-track-body') as HTMLElement, trackIndex);
       Renderer.markDirty();
     });
     row.appendChild(btn);
@@ -205,14 +210,9 @@ function buildPresetRow(trackIndex: number): HTMLElement {
     const name = prompt('Preset name:');
     if (!name) return;
     const presets = loadPresets();
-    presets.push({
-      name,
-      synthType: getSynthType(trackIndex),
-      envelope: getEnvelope(trackIndex),
-    });
+    presets.push({ name, synthType: getSynthType(trackIndex), envelope: getEnvelope(trackIndex) });
     savePresets(presets);
-    const panel = document.getElementById('sidepanel') as HTMLElement;
-    buildSidepanel(panel);
+    buildSidepanel(document.getElementById('sidepanel') as HTMLElement);
   });
   row.appendChild(saveBtn);
 
@@ -220,10 +220,10 @@ function buildPresetRow(trackIndex: number): HTMLElement {
 }
 
 // ---------------------------------------------------------------------------
-// Save/Load tracks
+// Save/Load
 // ---------------------------------------------------------------------------
 
-function buildSaveLoadSection(): HTMLElement {
+export function buildSaveLoadSection(): HTMLElement {
   const section = document.createElement('div');
   section.className = 'sp-section';
   section.innerHTML = '<h2>Tracks</h2>';
@@ -241,27 +241,19 @@ function buildSaveLoadSection(): HTMLElement {
       bpm: state.bpm,
       totalSteps: state.totalSteps,
       tracks: state.tracks.map((t, i) => ({
-        name: t.name,
-        color: t.color,
-        cells: t.cells,
-        synthType: getSynthType(i),
-        envelope: getEnvelope(i),
+        name: t.name, color: t.color, cells: t.cells,
+        synthType: getSynthType(i), envelope: getEnvelope(i),
       })),
     };
     localStorage.setItem(`step-sequencer-track:${name}`, JSON.stringify(data));
     const names = loadSavedTracks();
-    if (!names.includes(name)) {
-      names.push(name);
-      saveTrackList(names);
-    }
+    if (!names.includes(name)) { names.push(name); saveTrackList(names); }
     buildSidepanel(document.getElementById('sidepanel') as HTMLElement);
   });
   saveRow.appendChild(saveBtn);
-
   section.appendChild(saveRow);
 
-  const saved = loadSavedTracks();
-  for (const trackName of saved) {
+  for (const trackName of loadSavedTracks()) {
     const row = document.createElement('div');
     row.className = 'sp-actions';
 
@@ -276,19 +268,14 @@ function buildSaveLoadSection(): HTMLElement {
         state.bpm = data.bpm;
         state.totalSteps = data.totalSteps;
         state.tracks = data.tracks.map((t: { name: string; color: string; cells: { active: boolean; pitch: string }[]; synthType: SynthTypeId; envelope: { attack: number; decay: number; sustain: number; release: number } }, i: number) => {
-          if (synths[i]) {
-            swapSynth(i, t.synthType);
-            setEnvelope(i, t.envelope);
-          }
+          if (synths[i]) { swapSynth(i, t.synthType); setEnvelope(i, t.envelope); }
           return { name: t.name, color: t.color, cells: t.cells };
         });
-        const bpmSlider = document.getElementById('bpm-slider') as HTMLInputElement;
-        const bpmDisplay = document.getElementById('bpm-display') as HTMLElement;
-        bpmSlider.value = String(state.bpm);
-        bpmDisplay.textContent = String(state.bpm);
+        (document.getElementById('bpm-slider') as HTMLInputElement).value = String(state.bpm);
+        (document.getElementById('bpm-display') as HTMLElement).textContent = String(state.bpm);
         buildSidepanel(document.getElementById('sidepanel') as HTMLElement);
         Renderer.markDirty();
-      } catch { /* ignore corrupt data */ }
+      } catch { /* ignore */ }
     });
 
     const delBtn = document.createElement('button');
@@ -298,8 +285,7 @@ function buildSaveLoadSection(): HTMLElement {
     delBtn.style.padding = '8px 12px';
     delBtn.addEventListener('click', () => {
       localStorage.removeItem(`step-sequencer-track:${trackName}`);
-      const names = loadSavedTracks().filter(n => n !== trackName);
-      saveTrackList(names);
+      saveTrackList(loadSavedTracks().filter(n => n !== trackName));
       buildSidepanel(document.getElementById('sidepanel') as HTMLElement);
     });
 
