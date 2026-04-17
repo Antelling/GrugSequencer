@@ -41,10 +41,13 @@ canvas.addEventListener('pointerdown', (e) => {
     const track = hit.track as number;
     const step = hit.step as number;
     const cell = state.tracks[track].cells[step];
-    if (!cell.active) {
+    const clickedPitch = pitchFromCellX(hit.localX as number);
+    if (cell.active && cell.pitch === clickedPitch) {
+      cell.active = false;
+    } else {
       cell.active = true;
+      cell.pitch = clickedPitch;
     }
-    cell.pitch = pitchFromCellX(hit.localX as number);
     state.cursorTrack = track;
     state.cursorStep = step;
     moveCursor(0, 1);
