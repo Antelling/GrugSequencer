@@ -1,7 +1,7 @@
 import './style.css';
-import { state, toggleCell, moveCursor, seekToStep, addStanza, addTrack, setPlaying, setPaused, setBPM, removeStanza, NOTES, TRACK_COLORS } from './state.ts';
+import { state, toggleCell, moveCursor, seekToStep, addStanza, addTrack, setPlaying, setPaused, setBPM, removeStanza, TRACK_COLORS, computeTrackNotes, SCALES, SCALE_IDS, NOTE_NAMES, setTrackConfig, DEFAULT_NOTES } from './state.ts';
 import { Renderer } from './renderer.ts';
-import { Scheduler, setOnStep, addSynth, SYNTH_TYPES, getSynthType, getEnvelope, setEnvelope, swapSynth } from './scheduler.ts';
+import { Scheduler, setOnStep, addSynth, SYNTH_TYPES, getSynthType, getEnvelope, setEnvelope, swapSynth, getWaveform, previewNote } from './scheduler.ts';
 import type { SynthTypeId } from './scheduler.ts';
 import { createSequencerView, scrollSequencer, pitchFromCellX } from './sequencer-view.ts';
 import { buildSaveLoadSection } from './sidepanel.ts';
@@ -41,7 +41,7 @@ canvas.addEventListener('pointerdown', (e) => {
     const track = hit.track as number;
     const step = hit.step as number;
     const cell = state.tracks[track].cells[step];
-    const clickedPitch = pitchFromCellX(hit.localX as number);
+    const clickedPitch = pitchFromCellX(track, hit.localX as number);
     if (cell.active && cell.pitch === clickedPitch) {
       cell.active = false;
     } else {
@@ -117,8 +117,10 @@ canvas.addEventListener('touchmove', (e) => {
 // ---------------------------------------------------------------------------
 
 let panelOpenTrack = -1;
+let waveformRaf = 0;
 
 function openInstrumentPanel(trackIndex: number): void {
+  cancelAnimationFrame(waveformRaf);
   if (panelOpenTrack === trackIndex && bottomPanel.classList.contains('open')) {
     closePanel();
     return;
@@ -133,6 +135,7 @@ function openInstrumentPanel(trackIndex: number): void {
 }
 
 function closePanel(): void {
+  cancelAnimationFrame(waveformRaf);
   bottomPanel.classList.remove('open');
   panelOpenTrack = -1;
   Renderer.resize();
@@ -146,24 +149,61 @@ function buildInstrumentContent(container: HTMLElement, trackIndex: number): voi
 
   const header = document.createElement('div');
   header.className = 'fp-header';
-
   const dot = document.createElement('div');
   dot.className = 'sp-track-dot';
   dot.style.background = color;
-
   const name = document.createElement('span');
   name.style.fontWeight = '600';
   name.style.fontSize = '14px';
   name.textContent = track.name;
-
   header.appendChild(dot);
   header.appendChild(name);
   container.appendChild(header);
 
-  const synthField = document.createElement('div');
-  synthField.className = 'sp-field';
-  const synthLabel = document.createElement('label');
-  synthLabel.textContent = 'Type';
+  // Waveform preview
+  const waveCanvas = document.createElement('canvas');
+  waveCanvas.id = 'waveform-canvas';
+  waveCanvas.width = 512;
+  waveCanvas.height = 80;
+  waveCanvas.style.width = '100%';
+  waveCanvas.style.height = '60px';
+  waveCanvas.style.borderRadius = '6px';
+  waveCanvas.style.background = '#0f0f1a';
+  container.appendChild(waveCanvas);
+
+  const previewBtn = document.createElement('button');
+  previewBtn.type = 'button';
+  previewBtn.textContent = '▶ Preview';
+  previewBtn.style.cssText = 'padding:4px 12px;border:1px solid #2a2a40;border-radius:4px;background:#1a1a28;color:#b8b8d0;font-size:11px;cursor:pointer;align-self:flex-start';
+  previewBtn.addEventListener('click', () => {
+    const notes = computeTrackNotes(track.config);
+    previewNote(trackIndex, notes[Math.floor(notes.length / 2)] ?? 'C4');
+  });
+  container.appendChild(previewBtn);
+
+  // Waveform animation
+  const drawWave = () => {
+    const ctx = waveCanvas.getContext('2d');
+    if (!ctx) return;
+    const data = getWaveform(trackIndex);
+    ctx.clearRect(0, 0, 512, 80);
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    const sliceW = 512 / data.length;
+    for (let i = 0; i < data.length; i++) {
+      const v = (data[i] as number) * 0.5 + 0.5;
+      const y = v * 80;
+      if (i === 0) ctx.moveTo(0, y);
+      else ctx.lineTo(i * sliceW, y);
+    }
+    ctx.stroke();
+    waveformRaf = requestAnimationFrame(drawWave);
+  };
+  drawWave();
+
+  // Synth type
+  const synthField = makeField('Sound');
   const synthSelect = document.createElement('select');
   for (const st of SYNTH_TYPES) {
     const opt = document.createElement('option');
@@ -175,43 +215,119 @@ function buildInstrumentContent(container: HTMLElement, trackIndex: number): voi
   synthSelect.addEventListener('change', () => {
     swapSynth(trackIndex, synthSelect.value as SynthTypeId);
   });
-  synthField.appendChild(synthLabel);
   synthField.appendChild(synthSelect);
   container.appendChild(synthField);
 
+  // Scale
+  const scaleField = makeField('Scale');
+  const scaleSelect = document.createElement('select');
+  for (const id of SCALE_IDS) {
+    const opt = document.createElement('option');
+    opt.value = id;
+    opt.textContent = SCALES[id].label;
+    if (id === track.config.scale) opt.selected = true;
+    scaleSelect.appendChild(opt);
+  }
+  scaleSelect.addEventListener('change', () => {
+    const config = { ...track.config, scale: scaleSelect.value };
+    setTrackConfig(trackIndex, config);
+    Renderer.markDirty();
+  });
+  scaleField.appendChild(scaleSelect);
+  container.appendChild(scaleField);
+
+  // Root note
+  const rootField = makeField('Root');
+  const rootSelect = document.createElement('select');
+  for (let i = 0; i < NOTE_NAMES.length; i++) {
+    const opt = document.createElement('option');
+    opt.value = String(i);
+    opt.textContent = NOTE_NAMES[i];
+    if (i === track.config.root) opt.selected = true;
+    rootSelect.appendChild(opt);
+  }
+  rootSelect.addEventListener('change', () => {
+    const config = { ...track.config, root: parseInt(rootSelect.value, 10) };
+    setTrackConfig(trackIndex, config);
+    Renderer.markDirty();
+  });
+  rootField.appendChild(rootSelect);
+  container.appendChild(rootField);
+
+  // Octave range
+  const octField = makeField('Octave');
+  const octLow = document.createElement('select');
+  const octHigh = document.createElement('select');
+  for (let o = 2; o <= 6; o++) {
+    const optLow = document.createElement('option');
+    optLow.value = String(o);
+    optLow.textContent = String(o);
+    if (o === track.config.octaveLow) optLow.selected = true;
+    octLow.appendChild(optLow);
+
+    const optHigh = document.createElement('option');
+    optHigh.value = String(o);
+    optHigh.textContent = String(o);
+    if (o === track.config.octaveHigh) optHigh.selected = true;
+    octHigh.appendChild(optHigh);
+  }
+  const octSep = document.createElement('span');
+  octSep.textContent = '–';
+  octSep.style.color = '#8888a0';
+  const updateOctave = () => {
+    let lo = parseInt(octLow.value, 10);
+    let hi = parseInt(octHigh.value, 10);
+    if (hi < lo) hi = lo;
+    const config = { ...track.config, octaveLow: lo, octaveHigh: hi };
+    setTrackConfig(trackIndex, config);
+    Renderer.markDirty();
+  };
+  octLow.addEventListener('change', updateOctave);
+  octHigh.addEventListener('change', updateOctave);
+  octField.appendChild(octLow);
+  octField.appendChild(octSep);
+  octField.appendChild(octHigh);
+  container.appendChild(octField);
+
+  // Friendly ADSR
   const env = getEnvelope(trackIndex);
-  const envParams = [
-    { label: 'Attack', param: 'attack', min: 0, max: 1, step: 0.001 },
-    { label: 'Decay', param: 'decay', min: 0.001, max: 2, step: 0.001 },
-    { label: 'Sustain', param: 'sustain', min: 0, max: 1, step: 0.01 },
-    { label: 'Release', param: 'release', min: 0.001, max: 2, step: 0.001 },
+  const envLabels: [string, string, number, number, number][] = [
+    ['Snap', 'attack', 0, 1, 0.001],
+    ['Punch', 'decay', 0.001, 2, 0.001],
+    ['Hold', 'sustain', 0, 1, 0.01],
+    ['Fade', 'release', 0.001, 2, 0.001],
   ];
-  for (const p of envParams) {
-    const val = (env as Record<string, number>)[p.param];
-    container.appendChild(makeEnvSlider(trackIndex, p.label, p.param, val, p.min, p.max, p.step));
+  for (const [label, param, min, max, step] of envLabels) {
+    const val = (env as Record<string, number>)[param];
+    container.appendChild(makeEnvSlider(trackIndex, label, param, val, min, max, step));
   }
 
   container.appendChild(buildSaveLoadSection());
 }
 
+function makeField(label: string): HTMLElement {
+  const field = document.createElement('div');
+  field.className = 'sp-field';
+  const lbl = document.createElement('label');
+  lbl.textContent = label;
+  field.appendChild(lbl);
+  return field;
+}
+
 function makeEnvSlider(trackIndex: number, label: string, param: string, value: number, min: number, max: number, step: number): HTMLElement {
   const field = document.createElement('div');
   field.className = 'sp-field';
-
   const lbl = document.createElement('label');
   lbl.textContent = label;
-
   const input = document.createElement('input');
   input.type = 'range';
   input.min = String(min);
   input.max = String(max);
   input.step = String(step);
   input.value = String(value);
-
   const valSpan = document.createElement('span');
   valSpan.className = 'sp-val';
   valSpan.textContent = fmtNum(value);
-
   input.addEventListener('input', () => {
     const v = parseFloat(input.value);
     const env = getEnvelope(trackIndex);
@@ -220,7 +336,6 @@ function makeEnvSlider(trackIndex: number, label: string, param: string, value: 
     valSpan.textContent = fmtNum(v);
     Renderer.markDirty();
   });
-
   field.appendChild(lbl);
   field.appendChild(input);
   field.appendChild(valSpan);
@@ -433,8 +548,8 @@ function changeOctaveAtCursor(delta: number): void {
   const newOctave = Math.max(1, Math.min(octave + delta, 5));
   const tryPitch = `${noteName}${newOctave}`;
   const trySharp = `${noteName}#${newOctave}`;
-  if (hasSharp && NOTES.includes(trySharp)) cell.pitch = trySharp;
-  else if (NOTES.includes(tryPitch)) cell.pitch = tryPitch;
+  if (hasSharp && DEFAULT_NOTES.includes(trySharp)) cell.pitch = trySharp;
+  else if (DEFAULT_NOTES.includes(tryPitch)) cell.pitch = tryPitch;
 }
 
 function editNoteAtCursor(key: string): void {
@@ -444,8 +559,8 @@ function editNoteAtCursor(key: string): void {
   const octave = parseInt(cell.pitch.slice(-1), 10);
   const tryPitch = `${noteName}${octave}`;
   const trySharp = `${noteName}#${octave}`;
-  if (NOTES.includes(tryPitch)) cell.pitch = tryPitch;
-  else if (NOTES.includes(trySharp)) cell.pitch = trySharp;
+  if (DEFAULT_NOTES.includes(tryPitch)) cell.pitch = tryPitch;
+  else if (DEFAULT_NOTES.includes(trySharp)) cell.pitch = trySharp;
 }
 
 function toggleSharpAtCursor(): void {
@@ -456,8 +571,8 @@ function toggleSharpAtCursor(): void {
   const octave = parseInt(cell.pitch.slice(-1), 10);
   const natural = `${noteName}${octave}`;
   const sharp = `${noteName}#${octave}`;
-  if (hasSharp && NOTES.includes(natural)) cell.pitch = natural;
-  else if (!hasSharp && NOTES.includes(sharp)) cell.pitch = sharp;
+  if (hasSharp && DEFAULT_NOTES.includes(natural)) cell.pitch = natural;
+  else if (!hasSharp && DEFAULT_NOTES.includes(sharp)) cell.pitch = sharp;
 }
 
 Scheduler.init();

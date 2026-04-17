@@ -241,7 +241,7 @@ export function buildSaveLoadSection(): HTMLElement {
       bpm: state.bpm,
       totalSteps: state.totalSteps,
       tracks: state.tracks.map((t, i) => ({
-        name: t.name, color: t.color, cells: t.cells,
+        name: t.name, color: t.color, cells: t.cells, config: t.config,
         synthType: getSynthType(i), envelope: getEnvelope(i),
       })),
     };
@@ -267,9 +267,9 @@ export function buildSaveLoadSection(): HTMLElement {
         const data = JSON.parse(raw);
         state.bpm = data.bpm;
         state.totalSteps = data.totalSteps;
-        state.tracks = data.tracks.map((t: { name: string; color: string; cells: { active: boolean; pitch: string }[]; synthType: SynthTypeId; envelope: { attack: number; decay: number; sustain: number; release: number } }, i: number) => {
+        state.tracks = data.tracks.map((t: { name: string; color: string; cells: { active: boolean; pitch: string }[]; config?: { scale: string; root: number; octaveLow: number; octaveHigh: number }; synthType: SynthTypeId; envelope: { attack: number; decay: number; sustain: number; release: number } }, i: number) => {
           if (synths[i]) { swapSynth(i, t.synthType); setEnvelope(i, t.envelope); }
-          return { name: t.name, color: t.color, cells: t.cells };
+          return { name: t.name, color: t.color, cells: t.cells, config: t.config ?? { scale: 'pentatonic', root: 0, octaveLow: 4, octaveHigh: 4 } };
         });
         (document.getElementById('bpm-slider') as HTMLInputElement).value = String(state.bpm);
         (document.getElementById('bpm-display') as HTMLElement).textContent = String(state.bpm);

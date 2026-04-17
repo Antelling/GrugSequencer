@@ -6,7 +6,7 @@ import {
   state,
   STANZA_SIZE,
   TRACK_COLORS,
-  NOTES,
+  computeTrackNotes,
 } from './state.ts';
 
 // ---------------------------------------------------------------------------
@@ -186,18 +186,18 @@ function render(ctx: CanvasRenderingContext2D, rect: Rect): void {
       ctx.fill();
 
       if (active && cell) {
-        // Pitch stripes: each vertical slice is a note, highlight the selected one
         ctx.save();
         roundRect(ctx, x, y, CELL_SIZE, CELL_SIZE, CELL_RADIUS);
         ctx.clip();
 
-        const noteCount = NOTES.length;
+        const trackNotes = computeTrackNotes(state.tracks[t].config);
+        const noteCount = trackNotes.length;
         const stripeW = CELL_SIZE / noteCount;
-        const selectedIdx = NOTES.indexOf(cell.pitch);
+        const selectedIdx = trackNotes.indexOf(cell.pitch);
 
         for (let n = 0; n < noteCount; n++) {
           const sx = x + n * stripeW;
-          const isSharp = NOTES[n].includes('#');
+          const isSharp = trackNotes[n].includes('#');
           const isSelected = n === selectedIdx;
 
           if (isSelected) {
@@ -324,11 +324,12 @@ function hitTest(x: number, y: number, rect: Rect): HitResult | null {
 // Public factory
 // ---------------------------------------------------------------------------
 
-export function pitchFromCellX(localX: number): string {
-  const noteCount = NOTES.length;
+export function pitchFromCellX(trackIndex: number, localX: number): string {
+  const notes = computeTrackNotes(state.tracks[trackIndex]?.config ?? { scale: 'pentatonic', root: 0, octaveLow: 4, octaveHigh: 4 });
+  const noteCount = notes.length;
   const stripeW = CELL_SIZE / noteCount;
   const idx = Math.max(0, Math.min(Math.floor(localX / stripeW), noteCount - 1));
-  return NOTES[idx];
+  return notes[idx];
 }
 
 export function createSequencerView(): View {

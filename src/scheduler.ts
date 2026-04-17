@@ -30,17 +30,26 @@ let onStepCallback: ((step: number) => void) | null = null;
 let sequence: Tone.Sequence | null = null;
 
 const trackSynthTypes: SynthTypeId[] = [];
+const analysers: (Tone.Analyser | null)[] = [];
+
+function createAnalyser(): Tone.Analyser {
+  const analyser = new Tone.Analyser('waveform', 256);
+  return analyser;
+}
 
 export function createSynthByType(typeId: SynthTypeId): TrackSynth {
+  const analyser = createAnalyser();
+  analysers.push(analyser);
+
   switch (typeId) {
-    case 'Synth': return new Tone.PolySynth(Tone.Synth, { envelope: SNAP_ENV }).toDestination();
-    case 'AMSynth': return new Tone.AMSynth({ envelope: SNAP_ENV }).toDestination();
-    case 'FMSynth': return new Tone.FMSynth({ envelope: SNAP_ENV }).toDestination();
-    case 'DuoSynth': return new Tone.DuoSynth().toDestination();
-    case 'MembraneSynth': return new Tone.MembraneSynth({ envelope: MEMBRANE_ENV }).toDestination();
-    case 'MetalSynth': return new Tone.MetalSynth().toDestination();
-    case 'PluckSynth': return new Tone.PluckSynth().toDestination();
-    default: return new Tone.Synth({ envelope: SNAP_ENV }).toDestination();
+    case 'Synth': return new Tone.PolySynth(Tone.Synth, { envelope: SNAP_ENV }).fan(analyser).toDestination();
+    case 'AMSynth': return new Tone.AMSynth({ envelope: SNAP_ENV }).fan(analyser).toDestination();
+    case 'FMSynth': return new Tone.FMSynth({ envelope: SNAP_ENV }).fan(analyser).toDestination();
+    case 'DuoSynth': return new Tone.DuoSynth().fan(analyser).toDestination();
+    case 'MembraneSynth': return new Tone.MembraneSynth({ envelope: MEMBRANE_ENV }).fan(analyser).toDestination();
+    case 'MetalSynth': return new Tone.MetalSynth().fan(analyser).toDestination();
+    case 'PluckSynth': return new Tone.PluckSynth().fan(analyser).toDestination();
+    default: return new Tone.Synth({ envelope: SNAP_ENV }).fan(analyser).toDestination();
   }
 }
 
@@ -62,7 +71,23 @@ export function addSynth(): void {
 export function swapSynth(trackIndex: number, typeId: SynthTypeId): void {
   if (trackIndex < 0 || trackIndex >= synths.length) return;
   synths[trackIndex].dispose();
-  synths[trackIndex] = createSynthByType(typeId);
+  analysers[trackIndex]?.dispose();
+  const analyser = createAnalyser();
+  analysers[trackIndex] = analyser;
+  const synth = (() => {
+    switch (typeId) {
+      case 'Synth': return new Tone.PolySynth(Tone.Synth, { envelope: SNAP_ENV });
+      case 'AMSynth': return new Tone.AMSynth({ envelope: SNAP_ENV });
+      case 'FMSynth': return new Tone.FMSynth({ envelope: SNAP_ENV });
+      case 'DuoSynth': return new Tone.DuoSynth();
+      case 'MembraneSynth': return new Tone.MembraneSynth({ envelope: MEMBRANE_ENV });
+      case 'MetalSynth': return new Tone.MetalSynth();
+      case 'PluckSynth': return new Tone.PluckSynth();
+      default: return new Tone.Synth({ envelope: SNAP_ENV });
+    }
+  })();
+  synth.fan(analyser).toDestination();
+  synths[trackIndex] = synth;
   trackSynthTypes[trackIndex] = typeId;
 }
 
@@ -93,6 +118,17 @@ export function setEnvelope(trackIndex: number, env: { attack: number; decay: nu
     envelope.sustain = env.sustain;
     envelope.release = env.release;
   }
+}
+
+export function getWaveform(trackIndex: number): Float32List {
+  const analyser = analysers[trackIndex];
+  if (!analyser) return new Float32Array(256);
+  return analyser.getValue() as Float32List;
+}
+
+export async function previewNote(trackIndex: number, pitch: string): Promise<void> {
+  await Tone.start();
+  synths[trackIndex].triggerAttackRelease(pitch, '8n', Tone.now());
 }
 
 function createSequenceInternal(): void {
@@ -159,6 +195,9 @@ export const Scheduler = {
     sequence = null;
     for (const s of synths) {
       s.dispose();
+    }
+    for (const a of analysers) {
+      a?.dispose();
     }
   }
 };
