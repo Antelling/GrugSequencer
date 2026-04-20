@@ -13,7 +13,7 @@ const CURRENT_KEY = 'grug-current-project';
 export interface ProjectTrack {
   name: string;
   color: string;
-  cells: { active: boolean; pitch: string }[];
+  cells: { active: boolean; pitch: string; mergeLength: number }[];
   config: { scale: string; root: number; octaveLow: number; octaveHigh: number };
   synthType: SynthTypeId;
   envelope: { attack: number; decay: number; sustain: number; release: number };

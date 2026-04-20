@@ -50,6 +50,7 @@ export const DEFAULT_NOTES: string[] = computeTrackNotes({
 export interface Cell {
   active: boolean;
   pitch: string;
+  mergeLength: number;
 }
 
 export interface Track {
@@ -71,6 +72,8 @@ export interface SequencerState {
   helpOpen: boolean;
   loopStart: number;
   loopEnd: number;
+  mergeMode: boolean;
+  mergeAnchor: { track: number; step: number } | null;
 }
 
 export const state: SequencerState = {
@@ -85,26 +88,37 @@ export const state: SequencerState = {
   helpOpen: false,
   loopStart: 0,
   loopEnd: 4,
+  mergeMode: false,
+  mergeAnchor: null,
 };
 
 export function initTracks(): void {
   state.totalSteps = STANZA_SIZE
   state.loopStart = 0
   state.loopEnd = STANZA_SIZE
+  state.mergeMode = false
+  state.mergeAnchor = null
   state.tracks = Array.from({ length: INITIAL_TRACK_COUNT }, (_, i) => ({
     name: `T${i + 1}`,
     color: TRACK_COLORS[i],
     cells: Array.from({ length: state.totalSteps }, () => ({
       active: false,
       pitch: 'C4',
+      mergeLength: 1,
     })),
     config: { scale: 'pentatonic', root: 0, octaveLow: 4, octaveHigh: 4 },
   }));
 }
 
 export function toggleCell(trackIndex: number, stepIndex: number): void {
-  state.tracks[trackIndex].cells[stepIndex].active =
-    !state.tracks[trackIndex].cells[stepIndex].active;
+  if (isConsumedStep(trackIndex, stepIndex)) return;
+  const cell = state.tracks[trackIndex].cells[stepIndex];
+  if (cell.mergeLength > 1) {
+    unmergeCells(trackIndex, stepIndex);
+    cell.active = false;
+    return;
+  }
+  cell.active = !cell.active;
 }
 
 export function setPitch(trackIndex: number, stepIndex: number, pitch: string): void {
@@ -131,7 +145,7 @@ export function addStanza(): void {
   for (const track of state.tracks) {
     const defaultPitch = computeTrackNotes(track.config)[0] ?? 'C4';
     for (let i = 0; i < STANZA_SIZE; i++) {
-      track.cells.push({ active: false, pitch: defaultPitch });
+      track.cells.push({ active: false, pitch: defaultPitch, mergeLength: 1 });
     }
   }
 }
@@ -143,6 +157,12 @@ export function removeStanza(): void {
   if (state.loopStart >= state.totalSteps) state.loopStart = 0
   if (state.loopEnd <= state.loopStart) state.loopEnd = state.totalSteps
   for (const track of state.tracks) {
+    for (let s = 0; s < state.totalSteps; s++) {
+      const cell = track.cells[s];
+      if (cell.mergeLength > 1 && s + cell.mergeLength > state.totalSteps) {
+        cell.mergeLength = state.totalSteps - s;
+      }
+    }
     track.cells.length = state.totalSteps;
   }
   if (state.currentStep >= state.totalSteps) state.currentStep = 0;
@@ -158,6 +178,7 @@ export function addTrack(): void {
     cells: Array.from({ length: state.totalSteps }, () => ({
       active: false,
       pitch: computeTrackNotes(config)[0] ?? 'C4',
+      mergeLength: 1,
     })),
     config,
   });
@@ -183,6 +204,113 @@ export function setPlaying(v: boolean): void {
 
 export function setPaused(v: boolean): void {
   state.isPaused = v;
+}
+
+export function isConsumedStep(trackIndex: number, stepIndex: number): boolean {
+  const track = state.tracks[trackIndex];
+  if (!track) return false;
+  for (let s = Math.max(0, stepIndex - 64); s < stepIndex; s++) {
+    const cell = track.cells[s];
+    if (cell.mergeLength > 1 && s + cell.mergeLength > stepIndex) {
+      return true;
+    }
+  }
+  return false;
+}
+
+export function getMergeGroup(trackIndex: number, stepIndex: number): { startStep: number; length: number; pitches: string[] } | null {
+  const track = state.tracks[trackIndex];
+  if (!track) return null;
+
+  const cell = track.cells[stepIndex];
+  if (cell && cell.active && cell.mergeLength > 1) {
+    const pitches: string[] = [];
+    for (let i = 0; i < cell.mergeLength && stepIndex + i < track.cells.length; i++) {
+      pitches.push(track.cells[stepIndex + i].pitch);
+    }
+    return { startStep: stepIndex, length: cell.mergeLength, pitches };
+  }
+
+  for (let s = stepIndex - 1; s >= Math.max(0, stepIndex - 64); s--) {
+    const prevCell = track.cells[s];
+    if (prevCell.mergeLength > 1 && s + prevCell.mergeLength > stepIndex) {
+      const pitches: string[] = [];
+      for (let i = 0; i < prevCell.mergeLength && s + i < track.cells.length; i++) {
+        pitches.push(track.cells[s + i].pitch);
+      }
+      return { startStep: s, length: prevCell.mergeLength, pitches };
+    }
+  }
+
+  return null;
+}
+
+export function getMergeAnchorForStep(trackIndex: number, stepIndex: number): number {
+  const track = state.tracks[trackIndex];
+  if (!track) return stepIndex;
+  const cell = track.cells[stepIndex];
+  if (cell && cell.mergeLength > 1) return stepIndex;
+  for (let s = stepIndex - 1; s >= Math.max(0, stepIndex - 64); s--) {
+    const prevCell = track.cells[s];
+    if (prevCell.mergeLength > 1 && s + prevCell.mergeLength > stepIndex) {
+      return s;
+    }
+  }
+  return stepIndex;
+}
+
+export function mergeCells(trackIndex: number, targetStep: number): boolean {
+  if (!state.mergeAnchor) return false;
+  const { track, step: anchorStep } = state.mergeAnchor;
+  if (track !== trackIndex) return false;
+  if (targetStep < 0 || targetStep >= state.totalSteps) return false;
+
+  const trackData = state.tracks[trackIndex];
+  const anchor = trackData.cells[anchorStep];
+  if (!anchor || !anchor.active) return false;
+
+  const groupEnd = anchorStep + anchor.mergeLength - 1;
+
+  if (targetStep === anchorStep - 1) {
+    const target = trackData.cells[targetStep];
+    if (!target || isConsumedStep(trackIndex, targetStep)) return false;
+    target.active = true;
+    target.mergeLength = anchor.mergeLength + 1;
+    anchor.mergeLength = 1;
+    state.mergeAnchor = { track: trackIndex, step: targetStep };
+    return true;
+  }
+
+  if (targetStep === groupEnd + 1) {
+    const target = trackData.cells[targetStep];
+    if (!target || isConsumedStep(trackIndex, targetStep)) return false;
+    target.active = true;
+    anchor.mergeLength += 1;
+    return true;
+  }
+
+  return false;
+}
+
+export function unmergeCells(trackIndex: number, anchorStep: number): void {
+  const track = state.tracks[trackIndex];
+  if (!track) return;
+  const cell = track.cells[anchorStep];
+  if (!cell || cell.mergeLength <= 1) return;
+
+  for (let i = 1; i < cell.mergeLength; i++) {
+    const step = anchorStep + i;
+    if (step < track.cells.length) {
+      track.cells[step].active = false;
+      track.cells[step].mergeLength = 1;
+    }
+  }
+  cell.mergeLength = 1;
+}
+
+export function setMergeMode(active: boolean, anchor?: { track: number; step: number }): void {
+  state.mergeMode = active;
+  state.mergeAnchor = active && anchor ? anchor : null;
 }
 
 export function resetTransport(): void {
