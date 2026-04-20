@@ -1,15 +1,18 @@
 import './style.css';
-import { state, toggleCell, moveCursor, seekToStep, addStanza, addTrack, setPlaying, setPaused, setBPM, removeStanza, TRACK_COLORS, computeTrackNotes, SCALES, SCALE_IDS, NOTE_NAMES, setTrackConfig, DEFAULT_NOTES } from './state.ts';
+import { state, toggleCell, moveCursor, seekToStep, addStanza, addTrack, setPlaying, setPaused, setBPM, removeStanza, TRACK_COLORS, computeTrackNotes, SCALES, SCALE_IDS, NOTE_NAMES, setTrackConfig, DEFAULT_NOTES, initTracks, setLoopRange } from './state.ts';
 import { Renderer } from './renderer.ts';
-import { Scheduler, setOnStep, addSynth, SYNTH_TYPES, getSynthType, getEnvelope, setEnvelope, swapSynth, getWaveform, previewNote } from './scheduler.ts';
+import { Scheduler, setOnStep, addSynth, synths, SYNTH_TYPES, getSynthType, getEnvelope, setEnvelope, swapSynth, getWaveform, previewNote } from './scheduler.ts';
 import type { SynthTypeId } from './scheduler.ts';
 import { createSequencerView, scrollSequencer, pitchFromCellX } from './sequencer-view.ts';
-import { buildSaveLoadSection } from './sidepanel.ts';
+import { listProjects, loadProject, saveProject, deleteProject, getCurrentProject, setCurrentProject } from './projects.ts';
+import type { ProjectData } from './projects.ts';
 
 const canvas = document.getElementById('canvas') as HTMLCanvasElement;
 const bottomPanel = document.getElementById('bottom-panel') as HTMLElement;
 const panelContent = document.getElementById('panel-content') as HTMLElement;
 const panelHandle = document.getElementById('panel-handle') as HTMLElement;
+const projectBtn = document.getElementById('project-btn') as HTMLButtonElement;
+const projectNameEl = document.getElementById('project-name') as HTMLElement;
 
 Renderer.init(canvas);
 Renderer.registerView(createSequencerView());
@@ -22,20 +25,91 @@ setOnStep((step: number) => {
 });
 
 // ---------------------------------------------------------------------------
+// State serialization helpers
+// ---------------------------------------------------------------------------
+
+function serializeCurrentState(): ProjectData {
+  const currentName = getCurrentProject() ?? 'Untitled';
+  return {
+    name: currentName,
+    bpm: state.bpm,
+    totalSteps: state.totalSteps,
+    tracks: state.tracks.map((t, i) => ({
+      name: t.name,
+      color: t.color,
+      cells: t.cells,
+      config: t.config,
+      synthType: getSynthType(i),
+      envelope: getEnvelope(i),
+    })),
+  };
+}
+
+function deserializeToState(data: ProjectData): void {
+  state.bpm = data.bpm;
+  state.totalSteps = data.totalSteps;
+  state.tracks = data.tracks.map((t, i) => {
+    while (synths.length <= i) { addSynth(); }
+    swapSynth(i, t.synthType);
+    setEnvelope(i, t.envelope);
+    return {
+      name: t.name,
+      color: t.color,
+      cells: t.cells,
+      config: t.config ?? { scale: 'pentatonic', root: 0, octaveLow: 4, octaveHigh: 4 },
+    };
+  });
+  (document.getElementById('bpm-slider') as HTMLInputElement).value = String(state.bpm);
+  (document.getElementById('bpm-display') as HTMLElement).textContent = String(state.bpm);
+  Scheduler.rebuildSequence();
+  Renderer.markDirty();
+}
+
+function updateProjectNameDisplay(): void {
+  const name = getCurrentProject();
+  projectNameEl.textContent = name ?? 'New Project';
+}
+
+// ---------------------------------------------------------------------------
 // Pointer events
 // ---------------------------------------------------------------------------
 
+type DragMode = 'none' | 'playhead' | 'loop-start' | 'loop-end'
+
+let dragMode: DragMode = 'none'
+let dragMoved = false
+
 function canvasCoords(e: PointerEvent): { x: number; y: number } {
-  const rect = canvas.getBoundingClientRect();
-  return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+  const rect = canvas.getBoundingClientRect()
+  return { x: e.clientX - rect.left, y: e.clientY - rect.top }
 }
 
-let isDraggingPlayhead = false;
+function stepFromY(y: number): number {
+  const hit = Renderer.handlePointer(0, y)
+  if (hit?.type === 'step-label' || hit?.type === 'cell') {
+    return (hit.step as number) ?? state.currentStep
+  }
+  return state.currentStep
+}
 
 canvas.addEventListener('pointerdown', (e) => {
   const { x, y } = canvasCoords(e);
   const hit = Renderer.handlePointer(x, y);
   if (!hit) return;
+
+  if (hit.type === 'playhead-handle') {
+    dragMode = 'playhead'
+    dragMoved = false
+    Renderer.markDirty()
+    return
+  }
+
+  if (hit.type === 'loop-handle') {
+    dragMode = hit.handle === 'start' ? 'loop-start' : 'loop-end'
+    dragMoved = false
+    Renderer.markDirty()
+    return
+  }
 
   if (hit.type === 'cell') {
     const track = hit.track as number;
@@ -61,7 +135,8 @@ canvas.addEventListener('pointerdown', (e) => {
     if (state.isPlaying) {
       Scheduler.seekTo(step);
     }
-    isDraggingPlayhead = true;
+    dragMode = 'playhead';
+    dragMoved = false;
     Renderer.markDirty();
     return;
   }
@@ -73,21 +148,53 @@ canvas.addEventListener('pointerdown', (e) => {
 });
 
 canvas.addEventListener('pointermove', (e) => {
-  if (!isDraggingPlayhead) return;
-  const { x, y } = canvasCoords(e);
-  const hit = Renderer.handlePointer(x, y);
-  if (hit?.type === 'step-label' || hit?.type === 'cell') {
-    const step = (hit.step as number) ?? state.currentStep;
-    seekToStep(step);
+  if (dragMode === 'none') return
+  const { y } = canvasCoords(e)
+  dragMoved = true
+
+  if (dragMode === 'playhead') {
+    const step = stepFromY(y)
+    seekToStep(step)
     if (state.isPlaying) {
-      Scheduler.seekTo(step);
+      Scheduler.seekTo(step)
     }
-    Renderer.markDirty();
+    Renderer.markDirty()
+    return
+  }
+
+  if (dragMode === 'loop-start') {
+    const step = stepFromY(y)
+    setLoopRange(step, state.loopEnd)
+    if (state.isPlaying) {
+      Scheduler.rebuildSequence()
+    }
+    Renderer.markDirty()
+    return
+  }
+
+  if (dragMode === 'loop-end') {
+    const step = stepFromY(y)
+    setLoopRange(state.loopStart, step + 1)
+    if (state.isPlaying) {
+      Scheduler.rebuildSequence()
+    }
+    Renderer.markDirty()
+    return
   }
 });
 
 canvas.addEventListener('pointerup', () => {
-  isDraggingPlayhead = false;
+  if (!dragMoved) {
+    if (dragMode === 'loop-start') {
+      setLoopRange(0, state.loopEnd)
+    } else if (dragMode === 'loop-end') {
+      setLoopRange(state.loopStart, state.totalSteps)
+    }
+  }
+  if (dragMode === 'loop-start' || dragMode === 'loop-end') {
+    Scheduler.rebuildSequence()
+  }
+  dragMode = 'none'
 });
 
 canvas.addEventListener('wheel', (e) => {
@@ -98,12 +205,14 @@ canvas.addEventListener('wheel', (e) => {
 
 let touchStartY = 0;
 canvas.addEventListener('touchstart', (e) => {
+  if (dragMode !== 'none') return
   if (e.touches.length === 1) {
     touchStartY = e.touches[0].clientY;
   }
 }, { passive: true });
 
 canvas.addEventListener('touchmove', (e) => {
+  if (dragMode !== 'none') return
   if (e.touches.length === 1) {
     const dy = touchStartY - e.touches[0].clientY;
     touchStartY = e.touches[0].clientY;
@@ -118,9 +227,12 @@ canvas.addEventListener('touchmove', (e) => {
 
 let panelOpenTrack = -1;
 let waveformRaf = 0;
+let panelMode: 'instrument' | 'project' = 'instrument';
 
 function openInstrumentPanel(trackIndex: number): void {
   cancelAnimationFrame(waveformRaf);
+  panelMode = 'instrument';
+
   if (panelOpenTrack === trackIndex && bottomPanel.classList.contains('open')) {
     closePanel();
     return;
@@ -134,6 +246,18 @@ function openInstrumentPanel(trackIndex: number): void {
   Renderer.resize();
 }
 
+function openProjectPanel(): void {
+  cancelAnimationFrame(waveformRaf);
+  panelMode = 'project';
+
+  panelContent.innerHTML = '';
+  buildProjectPanel(panelContent);
+
+  panelOpenTrack = -1;
+  bottomPanel.classList.add('open');
+  Renderer.resize();
+}
+
 function closePanel(): void {
   cancelAnimationFrame(waveformRaf);
   bottomPanel.classList.remove('open');
@@ -142,6 +266,148 @@ function closePanel(): void {
 }
 
 panelHandle.addEventListener('click', closePanel);
+
+// ---------------------------------------------------------------------------
+// Project panel
+// ---------------------------------------------------------------------------
+
+function buildProjectPanel(container: HTMLElement): void {
+  const panel = document.createElement('div');
+  panel.className = 'project-panel';
+
+  const header = document.createElement('div');
+  header.className = 'project-panel-header';
+  const title = document.createElement('h2');
+  title.textContent = 'Projects';
+  const newBtn = document.createElement('button');
+  newBtn.type = 'button';
+  newBtn.className = 'project-new-btn';
+  newBtn.textContent = '+ New';
+  newBtn.addEventListener('click', () => {
+    const name = prompt('Project name:');
+    if (!name) return;
+    const existing = loadProject(name);
+    if (existing) {
+      alert('A project with that name already exists.');
+      return;
+    }
+    initTracks();
+    state.bpm = 120;
+    state.currentStep = 0;
+    state.cursorTrack = 0;
+    state.cursorStep = 0;
+    const targetTracks = state.tracks.length;
+    while (synths.length < targetTracks) { addSynth(); }
+    for (let i = 0; i < targetTracks; i++) {
+      swapSynth(i, 'Synth');
+      setEnvelope(i, { attack: 0.005, decay: 0.05, sustain: 0.3, release: 0.08 });
+    }
+    Scheduler.setBPM(state.bpm);
+    setCurrentProject(name);
+    const data = serializeCurrentState();
+    data.name = name;
+    saveProject(data);
+    updateProjectNameDisplay();
+    (document.getElementById('bpm-slider') as HTMLInputElement).value = String(state.bpm);
+    (document.getElementById('bpm-display') as HTMLElement).textContent = String(state.bpm);
+    closePanel();
+    Renderer.markDirty();
+  });
+  header.appendChild(title);
+  header.appendChild(newBtn);
+  panel.appendChild(header);
+
+  const currentName = getCurrentProject();
+
+  const saveBtn = document.createElement('button');
+  saveBtn.type = 'button';
+  saveBtn.style.cssText = 'padding:8px;border:1px solid #2a2a40;border-radius:6px;background:#1a1a28;color:#b8b8d0;font-size:12px;font-weight:600;cursor:pointer';
+  saveBtn.textContent = currentName ? `Save "${currentName}"` : 'Save Current';
+  saveBtn.addEventListener('click', () => {
+    let name = getCurrentProject();
+    if (!name) {
+      name = prompt('Save project as:');
+      if (!name) return;
+    }
+    const data = serializeCurrentState();
+    data.name = name;
+    saveProject(data);
+    updateProjectNameDisplay();
+    buildProjectPanel(container);
+  });
+  panel.appendChild(saveBtn);
+
+  const projects = listProjects();
+  if (projects.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'project-empty';
+    empty.textContent = 'No saved projects yet.';
+    panel.appendChild(empty);
+  } else {
+    const list = document.createElement('div');
+    list.className = 'project-list';
+
+    for (const name of projects) {
+      const row = document.createElement('div');
+      row.className = 'project-row';
+      if (name === currentName) row.classList.add('current');
+
+      const nameEl = document.createElement('span');
+      nameEl.className = 'project-row-name';
+      nameEl.textContent = name;
+
+      const meta = document.createElement('span');
+      meta.className = 'project-row-meta';
+      const pData = loadProject(name);
+      meta.textContent = pData ? `${pData.tracks.length} inst · ${pData.totalSteps} steps` : '';
+
+      row.appendChild(nameEl);
+      row.appendChild(meta);
+
+      row.addEventListener('click', (e) => {
+        if ((e.target as HTMLElement).closest('.project-row-delete')) return;
+        const pData = loadProject(name);
+        if (!pData) return;
+        deserializeToState(pData);
+        setCurrentProject(name);
+        updateProjectNameDisplay();
+        closePanel();
+      });
+
+      const delBtn = document.createElement('button');
+      delBtn.type = 'button';
+      delBtn.className = 'project-row-delete';
+      delBtn.textContent = '✕';
+      delBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (!confirm(`Delete "${name}"?`)) return;
+        deleteProject(name);
+        updateProjectNameDisplay();
+        buildProjectPanel(container);
+      });
+
+      row.appendChild(delBtn);
+      list.appendChild(row);
+    }
+
+    panel.appendChild(list);
+  }
+
+  container.innerHTML = '';
+  container.appendChild(panel);
+}
+
+projectBtn.addEventListener('click', () => {
+  if (panelMode === 'project' && bottomPanel.classList.contains('open')) {
+    closePanel();
+    return;
+  }
+  openProjectPanel();
+});
+
+// ---------------------------------------------------------------------------
+// Instrument panel content
+// ---------------------------------------------------------------------------
 
 function buildInstrumentContent(container: HTMLElement, trackIndex: number): void {
   const track = state.tracks[trackIndex];
@@ -181,7 +447,6 @@ function buildInstrumentContent(container: HTMLElement, trackIndex: number): voi
   });
   container.appendChild(previewBtn);
 
-  // Waveform animation
   const drawWave = () => {
     const ctx = waveCanvas.getContext('2d');
     if (!ctx) return;
@@ -289,7 +554,7 @@ function buildInstrumentContent(container: HTMLElement, trackIndex: number): voi
   octField.appendChild(octHigh);
   container.appendChild(octField);
 
-  // Friendly ADSR
+  // ADSR
   const env = getEnvelope(trackIndex);
   const envLabels: [string, string, number, number, number][] = [
     ['Snap', 'attack', 0, 1, 0.001],
@@ -301,8 +566,6 @@ function buildInstrumentContent(container: HTMLElement, trackIndex: number): voi
     const val = (env as Record<string, number>)[param];
     container.appendChild(makeEnvSlider(trackIndex, label, param, val, min, max, step));
   }
-
-  container.appendChild(buildSaveLoadSection());
 }
 
 function makeField(label: string): HTMLElement {
@@ -367,33 +630,22 @@ document.getElementById('add-stanza-btn')?.addEventListener('click', () => {
 });
 
 const playBtn = document.getElementById('play-btn') as HTMLButtonElement;
-const stopBtn = document.getElementById('stop-btn') as HTMLButtonElement;
 
 playBtn.addEventListener('click', () => {
   if (state.isPlaying) {
     Scheduler.pause();
     setPlaying(false);
     setPaused(true);
-    playBtn.textContent = '▶ Play';
+    playBtn.textContent = '▶';
     playBtn.classList.remove('playing');
   } else {
     Scheduler.start();
     setPlaying(true);
     setPaused(false);
     Scheduler.setBPM(state.bpm);
-    playBtn.textContent = '❚❚ Pause';
+    playBtn.textContent = '❚❚';
     playBtn.classList.add('playing');
   }
-});
-
-stopBtn.addEventListener('click', () => {
-  Scheduler.stop();
-  setPlaying(false);
-  setPaused(false);
-  state.currentStep = 0;
-  playBtn.textContent = '▶ Play';
-  playBtn.classList.remove('playing');
-  Renderer.markDirty();
 });
 
 document.getElementById('add-track-btn')?.addEventListener('click', () => {
@@ -465,14 +717,14 @@ document.addEventListener('keydown', (e) => {
         Scheduler.pause();
         setPlaying(false);
         setPaused(true);
-        playBtn.textContent = '▶ Play';
+        playBtn.textContent = '▶';
         playBtn.classList.remove('playing');
       } else {
         Scheduler.start();
         setPlaying(true);
         setPaused(false);
         Scheduler.setBPM(state.bpm);
-        playBtn.textContent = '❚❚ Pause';
+        playBtn.textContent = '❚❚';
         playBtn.classList.add('playing');
       }
       Renderer.markDirty();
@@ -575,5 +827,18 @@ function toggleSharpAtCursor(): void {
   else if (!hasSharp && DEFAULT_NOTES.includes(sharp)) cell.pitch = sharp;
 }
 
+// ---------------------------------------------------------------------------
+// Init
+// ---------------------------------------------------------------------------
+
 Scheduler.init();
 Scheduler.setBPM(state.bpm);
+
+const savedProjectName = getCurrentProject();
+if (savedProjectName) {
+  const saved = loadProject(savedProjectName);
+  if (saved) {
+    deserializeToState(saved);
+  }
+}
+updateProjectNameDisplay();

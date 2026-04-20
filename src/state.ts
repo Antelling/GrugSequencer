@@ -69,6 +69,8 @@ export interface SequencerState {
   totalSteps: number;
   bpm: number;
   helpOpen: boolean;
+  loopStart: number;
+  loopEnd: number;
 }
 
 export const state: SequencerState = {
@@ -78,13 +80,17 @@ export const state: SequencerState = {
   currentStep: 0,
   cursorTrack: 0,
   cursorStep: 0,
-  totalSteps: 16,
+  totalSteps: 4,
   bpm: 120,
   helpOpen: false,
+  loopStart: 0,
+  loopEnd: 4,
 };
 
 export function initTracks(): void {
-  state.totalSteps = STANZA_SIZE;
+  state.totalSteps = STANZA_SIZE
+  state.loopStart = 0
+  state.loopEnd = STANZA_SIZE
   state.tracks = Array.from({ length: INITIAL_TRACK_COUNT }, (_, i) => ({
     name: `T${i + 1}`,
     color: TRACK_COLORS[i],
@@ -114,8 +120,14 @@ export function seekToStep(step: number): void {
   state.currentStep = Math.max(0, Math.min(step, state.totalSteps - 1));
 }
 
+export function setLoopRange(start: number, end: number): void {
+  state.loopStart = Math.max(0, Math.min(start, state.totalSteps - 1))
+  state.loopEnd = Math.max(state.loopStart + 1, Math.min(end, state.totalSteps))
+}
+
 export function addStanza(): void {
   state.totalSteps += STANZA_SIZE;
+  state.loopEnd = Math.min(state.loopEnd + STANZA_SIZE, state.totalSteps)
   for (const track of state.tracks) {
     const defaultPitch = computeTrackNotes(track.config)[0] ?? 'C4';
     for (let i = 0; i < STANZA_SIZE; i++) {
@@ -127,6 +139,9 @@ export function addStanza(): void {
 export function removeStanza(): void {
   if (state.totalSteps <= STANZA_SIZE) return;
   state.totalSteps -= STANZA_SIZE;
+  state.loopEnd = Math.min(state.loopEnd, state.totalSteps)
+  if (state.loopStart >= state.totalSteps) state.loopStart = 0
+  if (state.loopEnd <= state.loopStart) state.loopEnd = state.totalSteps
   for (const track of state.tracks) {
     track.cells.length = state.totalSteps;
   }

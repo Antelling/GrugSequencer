@@ -19,6 +19,8 @@ const CELL_RADIUS = 8;
 const TRACK_LABEL_WIDTH = 40;
 const STEP_LABEL_HEIGHT = 28;
 const STANZA_GAP = 16;
+const HANDLE_SIZE = 12;
+const HANDLE_HIT = 24;
 
 // ---------------------------------------------------------------------------
 // Colors
@@ -32,6 +34,10 @@ const COL = {
   cursor:      '#f59e0b',
   textMuted:   '#666680',
   stanzaAlt:   'rgba(255, 255, 255, 0.018)',
+  loopRegion:  'rgba(29, 209, 161, 0.06)',
+  loopBoundary:'rgba(29, 209, 161, 0.4)',
+  loopHandle:  '#1dd1a1',
+  playheadHandle: '#ffffff',
 } as const;
 
 // ---------------------------------------------------------------------------
@@ -166,6 +172,65 @@ function render(ctx: CanvasRenderingContext2D, rect: Rect): void {
     ctx.fillText(String(s + 1), TRACK_LABEL_WIDTH - 8, y + CELL_SIZE / 2);
   }
 
+  // Loop region highlight + handles
+  {
+    const loopActive = state.loopStart > 0 || state.loopEnd < totalSteps
+    const lastLoopStep = state.loopEnd - 1
+    const lsY = stepY(state.loopStart) + CELL_SIZE / 2
+    const leY = stepY(lastLoopStep) + CELL_SIZE / 2
+
+    if (loopActive) {
+      const ly0 = stepY(state.loopStart) - CELL_GAP / 2
+      const ly1 = stepY(lastLoopStep) + CELL_SIZE + CELL_GAP / 2
+      const gw = gridWidth()
+
+      ctx.fillStyle = COL.loopRegion
+      ctx.fillRect(TRACK_LABEL_WIDTH, ly0, gw - TRACK_LABEL_WIDTH, ly1 - ly0)
+
+      ctx.strokeStyle = COL.loopBoundary
+      ctx.lineWidth = 1
+      ctx.setLineDash([4, 4])
+      ctx.beginPath()
+      ctx.moveTo(TRACK_LABEL_WIDTH, ly0)
+      ctx.lineTo(gw, ly0)
+      ctx.stroke()
+      ctx.beginPath()
+      ctx.moveTo(TRACK_LABEL_WIDTH, ly1)
+      ctx.lineTo(gw, ly1)
+      ctx.stroke()
+      ctx.setLineDash([])
+    }
+
+    // Loop start handle (always visible, dimmed when at default position)
+    const handleAlpha = loopActive ? 1 : 0.35
+    ctx.save()
+    ctx.globalAlpha = handleAlpha
+    ctx.fillStyle = COL.loopHandle
+    ctx.shadowColor = COL.loopHandle
+    ctx.shadowBlur = 6
+    ctx.beginPath()
+    ctx.moveTo(0, lsY - HANDLE_SIZE / 2)
+    ctx.lineTo(HANDLE_SIZE, lsY)
+    ctx.lineTo(0, lsY + HANDLE_SIZE / 2)
+    ctx.closePath()
+    ctx.fill()
+    ctx.restore()
+
+    // Loop end handle (always visible, dimmed when at default position)
+    ctx.save()
+    ctx.globalAlpha = handleAlpha
+    ctx.fillStyle = COL.loopHandle
+    ctx.shadowColor = COL.loopHandle
+    ctx.shadowBlur = 6
+    ctx.beginPath()
+    ctx.moveTo(0, leY - HANDLE_SIZE / 2)
+    ctx.lineTo(HANDLE_SIZE, leY)
+    ctx.lineTo(0, leY + HANDLE_SIZE / 2)
+    ctx.closePath()
+    ctx.fill()
+    ctx.restore()
+  }
+
   // Grid cells
   const isCurrentlyPlaying = state.isPlaying || state.isPaused;
 
@@ -256,19 +321,29 @@ function render(ctx: CanvasRenderingContext2D, rect: Rect): void {
     }
   }
 
-  // Playhead line
-  if (isCurrentlyPlaying && state.currentStep >= 0 && state.currentStep < totalSteps) {
+  // Playhead line + handle
+  if (state.currentStep >= 0 && state.currentStep < totalSteps) {
     const py = stepY(state.currentStep) + CELL_SIZE / 2;
     ctx.save();
     ctx.shadowColor = '#ffffff';
     ctx.shadowBlur = 8;
     ctx.strokeStyle = '#ffffff';
-    ctx.lineWidth = 2;
+    ctx.lineWidth = 3;
     ctx.beginPath();
     ctx.moveTo(TRACK_LABEL_WIDTH, py);
     ctx.lineTo(gridWidth(), py);
     ctx.stroke();
     ctx.restore();
+
+    // Playhead handle in left margin
+    ctx.save()
+    ctx.fillStyle = COL.playheadHandle
+    ctx.shadowColor = COL.playheadHandle
+    ctx.shadowBlur = 6
+    ctx.beginPath()
+    ctx.arc(TRACK_LABEL_WIDTH / 2, py, 6, 0, Math.PI * 2)
+    ctx.fill()
+    ctx.restore()
   }
 
   ctx.restore();
@@ -285,9 +360,31 @@ function hitTest(x: number, y: number, rect: Rect): HitResult | null {
   const lx = x - rect.x;
   const ly = y - rect.y + scrollOffset;
 
+  const totalSteps = state.totalSteps
+
+  // Playhead handle hit (left margin, near current step)
+  if (state.currentStep >= 0 && state.currentStep < totalSteps) {
+    const phY = stepY(state.currentStep) + CELL_SIZE / 2
+    if (lx >= 0 && lx < TRACK_LABEL_WIDTH && Math.abs(ly - phY) <= HANDLE_HIT / 2) {
+      return { type: 'playhead-handle' }
+    }
+  }
+
+  // Loop handle hits (left margin triangles)
+  {
+    const lsY = stepY(state.loopStart) + CELL_SIZE / 2
+    if (lx < TRACK_LABEL_WIDTH && Math.abs(ly - lsY) <= HANDLE_HIT / 2) {
+      return { type: 'loop-handle', handle: 'start' }
+    }
+    const leY = stepY(state.loopEnd - 1) + CELL_SIZE / 2
+    if (lx < TRACK_LABEL_WIDTH && Math.abs(ly - leY) <= HANDLE_HIT / 2) {
+      return { type: 'loop-handle', handle: 'end' }
+    }
+  }
+
   // Step label hit
   if (lx >= 0 && lx < TRACK_LABEL_WIDTH) {
-    for (let s = 0; s < state.totalSteps; s++) {
+    for (let s = 0; s < totalSteps; s++) {
       const sy = stepY(s);
       if (ly >= sy && ly < sy + CELL_SIZE) {
         return { type: 'step-label', step: s };
@@ -306,7 +403,7 @@ function hitTest(x: number, y: number, rect: Rect): HitResult | null {
   }
 
   // Cell hit
-  for (let s = 0; s < state.totalSteps; s++) {
+  for (let s = 0; s < totalSteps; s++) {
     const sy = stepY(s);
     if (ly < sy || ly >= sy + CELL_SIZE) continue;
     for (let t = 0; t < state.tracks.length; t++) {

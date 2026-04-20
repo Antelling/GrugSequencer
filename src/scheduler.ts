@@ -135,6 +135,16 @@ function createSequenceInternal(): void {
   if (sequence) {
     sequence.dispose();
   }
+  const loopStart = state.loopStart
+  const loopEnd = state.loopEnd
+  const totalSteps = state.totalSteps
+  const loopActive = loopStart > 0 || loopEnd < totalSteps
+  const effectiveStart = loopActive ? loopStart : 0
+  const effectiveEnd = loopActive ? loopEnd : totalSteps
+  const steps = loopActive
+    ? Array.from({ length: effectiveEnd - effectiveStart }, (_, i) => effectiveStart + i)
+    : Array.from({ length: totalSteps }, (_, i) => i)
+
   sequence = new Tone.Sequence((time, step) => {
     const tracks = state.tracks;
     for (let t = 0; t < tracks.length; t++) {
@@ -148,7 +158,10 @@ function createSequenceInternal(): void {
         onStepCallback(step);
       }
     }, time);
-  }, Array.from({ length: state.totalSteps }, (_, i) => i), '16n');
+  }, steps, '16n');
+
+  sequence.loopStart = 0
+  sequence.loopEnd = steps.length
 }
 
 export const Scheduler = {
@@ -199,6 +212,9 @@ export const Scheduler = {
     for (const a of analysers) {
       a?.dispose();
     }
+    synths.length = 0;
+    analysers.length = 0;
+    trackSynthTypes.length = 0;
   }
 };
 
