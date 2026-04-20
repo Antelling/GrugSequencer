@@ -233,6 +233,123 @@ canvas#canvas {
   color: #fff;
 }
 
+/* Project button */
+
+.project-btn {
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-btn #project-name {
+  pointer-events: none;
+}
+
+/* Project panel */
+
+.project-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.project-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.project-panel-header h2 {
+  font-size: 15px;
+  font-weight: 700;
+  color: #e8e8f0;
+  margin: 0;
+}
+
+.project-new-btn {
+  padding: 6px 14px;
+  border: 1px solid #1dd1a1;
+  border-radius: 6px;
+  background: transparent;
+  color: #1dd1a1;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.project-new-btn:hover {
+  background: rgba(29, 209, 161, 0.12);
+}
+
+.project-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 40vh;
+  overflow-y: auto;
+}
+
+.project-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid #2a2a40;
+  border-radius: 8px;
+  background: #0f0f1a;
+  cursor: pointer;
+  transition: background 0.1s;
+}
+
+.project-row:hover {
+  background: #1a1a2e;
+}
+
+.project-row.current {
+  border-color: #1dd1a1;
+  background: rgba(29, 209, 161, 0.06);
+}
+
+.project-row-name {
+  flex: 1;
+  font-size: 13px;
+  font-weight: 600;
+  color: #e8e8f0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-row-meta {
+  font-size: 11px;
+  color: #666680;
+  flex-shrink: 0;
+}
+
+.project-row-delete {
+  padding: 4px 8px;
+  border: 1px solid #2a2a40;
+  border-radius: 4px;
+  background: transparent;
+  color: #ff6b6b;
+  font-size: 12px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.project-row-delete:hover {
+  background: rgba(255, 107, 107, 0.12);
+  border-color: #ff6b6b;
+}
+
+.project-empty {
+  text-align: center;
+  color: #666680;
+  font-size: 13px;
+  padding: 20px 0;
+}
+
 /* Track save/load rows */
 
 .sp-section {

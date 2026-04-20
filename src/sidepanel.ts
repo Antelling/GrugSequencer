@@ -4,7 +4,6 @@ import type { SynthTypeId } from './scheduler.ts';
 import { Renderer } from './renderer.ts';
 
 const PRESET_KEY = 'step-sequencer-presets';
-const TRACK_KEY = 'step-sequencer-tracks';
 
 interface Preset {
   name: string;
@@ -19,22 +18,6 @@ function loadPresets(): Preset[] {
 function savePresets(presets: Preset[]): void {
   localStorage.setItem(PRESET_KEY, JSON.stringify(presets));
 }
-
-function loadSavedTracks(): string[] {
-  try { return JSON.parse(localStorage.getItem(TRACK_KEY) ?? '[]'); } catch { return []; }
-}
-
-function saveTrackList(names: string[]): void {
-  localStorage.setItem(TRACK_KEY, JSON.stringify(names));
-}
-
-function getTrackData(trackName: string): string | null {
-  return localStorage.getItem(`step-sequencer-track:${trackName}`);
-}
-
-// ---------------------------------------------------------------------------
-// Build
-// ---------------------------------------------------------------------------
 
 export function buildSidepanel(container: HTMLElement): void {
   container.innerHTML = '';
@@ -51,7 +34,6 @@ export function buildSidepanel(container: HTMLElement): void {
     tracksSection.appendChild(buildTrackCard(t));
   }
   container.appendChild(tracksSection);
-  container.appendChild(buildSaveLoadSection());
 
   Renderer.resize();
 }
@@ -217,84 +199,6 @@ function buildPresetRow(trackIndex: number): HTMLElement {
   row.appendChild(saveBtn);
 
   return row;
-}
-
-// ---------------------------------------------------------------------------
-// Save/Load
-// ---------------------------------------------------------------------------
-
-export function buildSaveLoadSection(): HTMLElement {
-  const section = document.createElement('div');
-  section.className = 'sp-section';
-  section.innerHTML = '<h2>Tracks</h2>';
-
-  const saveRow = document.createElement('div');
-  saveRow.className = 'sp-actions';
-
-  const saveBtn = document.createElement('button');
-  saveBtn.type = 'button';
-  saveBtn.textContent = 'Save Track';
-  saveBtn.addEventListener('click', () => {
-    const name = prompt('Track name:');
-    if (!name) return;
-    const data = {
-      bpm: state.bpm,
-      totalSteps: state.totalSteps,
-      tracks: state.tracks.map((t, i) => ({
-        name: t.name, color: t.color, cells: t.cells, config: t.config,
-        synthType: getSynthType(i), envelope: getEnvelope(i),
-      })),
-    };
-    localStorage.setItem(`step-sequencer-track:${name}`, JSON.stringify(data));
-    const names = loadSavedTracks();
-    if (!names.includes(name)) { names.push(name); saveTrackList(names); }
-    buildSidepanel(document.getElementById('sidepanel') as HTMLElement);
-  });
-  saveRow.appendChild(saveBtn);
-  section.appendChild(saveRow);
-
-  for (const trackName of loadSavedTracks()) {
-    const row = document.createElement('div');
-    row.className = 'sp-actions';
-
-    const loadBtn = document.createElement('button');
-    loadBtn.type = 'button';
-    loadBtn.textContent = trackName;
-    loadBtn.addEventListener('click', () => {
-      const raw = getTrackData(trackName);
-      if (!raw) return;
-      try {
-        const data = JSON.parse(raw);
-        state.bpm = data.bpm;
-        state.totalSteps = data.totalSteps;
-        state.tracks = data.tracks.map((t: { name: string; color: string; cells: { active: boolean; pitch: string }[]; config?: { scale: string; root: number; octaveLow: number; octaveHigh: number }; synthType: SynthTypeId; envelope: { attack: number; decay: number; sustain: number; release: number } }, i: number) => {
-          if (synths[i]) { swapSynth(i, t.synthType); setEnvelope(i, t.envelope); }
-          return { name: t.name, color: t.color, cells: t.cells, config: t.config ?? { scale: 'pentatonic', root: 0, octaveLow: 4, octaveHigh: 4 } };
-        });
-        (document.getElementById('bpm-slider') as HTMLInputElement).value = String(state.bpm);
-        (document.getElementById('bpm-display') as HTMLElement).textContent = String(state.bpm);
-        buildSidepanel(document.getElementById('sidepanel') as HTMLElement);
-        Renderer.markDirty();
-      } catch { /* ignore */ }
-    });
-
-    const delBtn = document.createElement('button');
-    delBtn.type = 'button';
-    delBtn.textContent = '✕';
-    delBtn.style.flex = '0';
-    delBtn.style.padding = '8px 12px';
-    delBtn.addEventListener('click', () => {
-      localStorage.removeItem(`step-sequencer-track:${trackName}`);
-      saveTrackList(loadSavedTracks().filter(n => n !== trackName));
-      buildSidepanel(document.getElementById('sidepanel') as HTMLElement);
-    });
-
-    row.appendChild(loadBtn);
-    row.appendChild(delBtn);
-    section.appendChild(row);
-  }
-
-  return section;
 }
 
 function formatNum(n: number): string {
