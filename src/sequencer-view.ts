@@ -7,6 +7,7 @@ import {
   STANZA_SIZE,
   TRACK_COLORS,
   computeTrackNotes,
+  isConsumedStep,
 } from './state.ts';
 
 // ---------------------------------------------------------------------------
@@ -61,6 +62,10 @@ function roundRect(
   c.arcTo(x,     y + h, x,     y,     r);
   c.arcTo(x,     y,     x + w, y,     r);
   c.closePath();
+}
+
+function mergedCellHeight(mergeLength: number): number {
+  return mergeLength * CELL_SIZE + (mergeLength - 1) * CELL_GAP;
 }
 
 /** Total grid height (before clamping to viewport). */
@@ -245,6 +250,78 @@ function render(ctx: CanvasRenderingContext2D, rect: Rect): void {
       const trackColor = TRACK_COLORS[t % TRACK_COLORS.length];
       const isCursor = t === state.cursorTrack && s === state.cursorStep;
 
+      if (isConsumedStep(t, s)) continue;
+
+      if (active && cell && cell.mergeLength > 1) {
+        const totalH = mergedCellHeight(cell.mergeLength);
+
+        ctx.fillStyle = COL.cellInactive;
+        roundRect(ctx, x, y, CELL_SIZE, totalH, CELL_RADIUS);
+        ctx.fill();
+
+        ctx.save();
+        roundRect(ctx, x, y, CELL_SIZE, totalH, CELL_RADIUS);
+        ctx.clip();
+        const trackNotes = computeTrackNotes(state.tracks[t].config);
+        const noteCount = trackNotes.length;
+        const stripeW = CELL_SIZE / noteCount;
+        for (let i = 0; i < cell.mergeLength && s + i < state.totalSteps; i++) {
+          const stepYPos = stepY(s + i);
+          const stepPitch = state.tracks[t].cells[s + i].pitch;
+          const selectedIdx = trackNotes.indexOf(stepPitch);
+          for (let n = 0; n < noteCount; n++) {
+            const sx = x + n * stripeW;
+            const isSharp = trackNotes[n].includes('#');
+            const isSelected = n === selectedIdx;
+            if (isSelected) { ctx.fillStyle = trackColor; ctx.globalAlpha = 0.5; }
+            else if (isSharp) { ctx.fillStyle = '#1a1a2a'; ctx.globalAlpha = 0.4; }
+            else { ctx.fillStyle = '#2a2a40'; ctx.globalAlpha = 0.2; }
+            ctx.fillRect(sx, stepYPos, stripeW + 0.5, CELL_SIZE);
+          }
+        }
+        ctx.globalAlpha = 1;
+        ctx.restore();
+
+        ctx.save();
+        ctx.shadowColor = trackColor;
+        ctx.shadowBlur = 16;
+        ctx.strokeStyle = trackColor;
+        ctx.lineWidth = 2;
+        roundRect(ctx, x, y, CELL_SIZE, totalH, CELL_RADIUS);
+        ctx.stroke();
+        ctx.restore();
+
+        ctx.fillStyle = '#ffffff';
+        ctx.font = '600 11px system-ui, -apple-system, sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        for (let i = 0; i < cell.mergeLength && s + i < state.totalSteps; i++) {
+          const pitch = state.tracks[t].cells[s + i].pitch;
+          const stepCenterY = stepY(s + i) + CELL_SIZE / 2;
+          ctx.fillText(pitch, x + CELL_SIZE / 2, stepCenterY);
+        }
+
+        if (isPlayingStep) {
+          ctx.strokeStyle = COL.playOutline;
+          ctx.lineWidth = 2;
+          roundRect(ctx, x - 1, y - 1, CELL_SIZE + 2, totalH + 2, CELL_RADIUS + 1);
+          ctx.stroke();
+        }
+
+        if (isCursor) {
+          ctx.save();
+          ctx.setLineDash([4, 3]);
+          ctx.strokeStyle = COL.cursor;
+          ctx.lineWidth = 2;
+          roundRect(ctx, x - 3, y - 3, CELL_SIZE + 6, totalH + 6, CELL_RADIUS + 3);
+          ctx.stroke();
+          ctx.setLineDash([]);
+          ctx.restore();
+        }
+
+        continue;
+      }
+
       // Cell background
       ctx.fillStyle = COL.cellInactive;
       roundRect(ctx, x, y, CELL_SIZE, CELL_SIZE, CELL_RADIUS);
@@ -318,6 +395,44 @@ function render(ctx: CanvasRenderingContext2D, rect: Rect): void {
         ctx.restore();
       }
 
+    }
+  }
+
+  // Merge mode overlay
+  if (state.mergeMode && state.mergeAnchor) {
+    const { track: mt, step: ms } = state.mergeAnchor;
+    const mx = trackX(mt);
+    const my = stepY(ms);
+    const anchorCell = state.tracks[mt]?.cells[ms];
+    if (anchorCell && anchorCell.active) {
+      const mh = anchorCell.mergeLength > 1 
+        ? mergedCellHeight(anchorCell.mergeLength) 
+        : CELL_SIZE;
+
+      ctx.save();
+      ctx.setLineDash([6, 4]);
+      ctx.strokeStyle = '#00ffff';
+      ctx.lineWidth = 3;
+      ctx.shadowColor = '#00ffff';
+      ctx.shadowBlur = 12;
+      roundRect(ctx, mx - 4, my - 4, CELL_SIZE + 8, mh + 8, CELL_RADIUS + 4);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.restore();
+
+      ctx.fillStyle = '#00ffff';
+      ctx.font = 'bold 16px system-ui';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+
+      const groupEnd = ms + anchorCell.mergeLength - 1;
+      if (ms > 0) {
+        ctx.fillText('▲', mx + CELL_SIZE / 2, stepY(ms) - CELL_GAP - 4);
+      }
+      if (groupEnd < state.totalSteps - 1) {
+        const endY = stepY(groupEnd) + CELL_SIZE + CELL_GAP + 4;
+        ctx.fillText('▼', mx + CELL_SIZE / 2, endY);
+      }
     }
   }
 

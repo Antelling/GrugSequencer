@@ -1,5 +1,5 @@
 import * as Tone from 'tone';
-import { state, INITIAL_TRACK_COUNT } from './state.ts';
+import { state, INITIAL_TRACK_COUNT, isConsumedStep, getMergeGroup } from './state.ts';
 
 export type TrackSynth =
   | Tone.PolySynth
@@ -31,10 +31,22 @@ let sequence: Tone.Sequence | null = null;
 
 const trackSynthTypes: SynthTypeId[] = [];
 const analysers: (Tone.Analyser | null)[] = [];
+const glideSynths: (Tone.Synth | null)[] = [];
 
 function createAnalyser(): Tone.Analyser {
   const analyser = new Tone.Analyser('waveform', 256);
   return analyser;
+}
+
+function getGlideSynth(trackIndex: number): Tone.Synth {
+  if (!glideSynths[trackIndex]) {
+    const env = getEnvelope(trackIndex);
+    const synth = new Tone.Synth({ envelope: env });
+    const analyser = analysers[trackIndex] ?? createAnalyser();
+    synth.fan(analyser).toDestination();
+    glideSynths[trackIndex] = synth;
+  }
+  return glideSynths[trackIndex]!;
 }
 
 export function createSynthByType(typeId: SynthTypeId): TrackSynth {
@@ -118,6 +130,16 @@ export function setEnvelope(trackIndex: number, env: { attack: number; decay: nu
     envelope.sustain = env.sustain;
     envelope.release = env.release;
   }
+  const gSynth = glideSynths[trackIndex];
+  if (gSynth) {
+    const gEnv = (gSynth as { envelope?: Tone.Envelope }).envelope;
+    if (gEnv) {
+      gEnv.attack = env.attack;
+      gEnv.decay = env.decay;
+      gEnv.sustain = env.sustain;
+      gEnv.release = env.release;
+    }
+  }
 }
 
 export function getWaveform(trackIndex: number): Float32List {
@@ -148,10 +170,48 @@ function createSequenceInternal(): void {
   sequence = new Tone.Sequence((time, step) => {
     const tracks = state.tracks;
     for (let t = 0; t < tracks.length; t++) {
+      if (isConsumedStep(t, step)) continue;
+
       const cell = tracks[t].cells[step];
-      if (cell.active) {
+      if (!cell.active) continue;
+
+      if (cell.mergeLength <= 1) {
         synths[t].triggerAttackRelease(cell.pitch, '16n', time);
+        continue;
       }
+
+      const stepSeconds = Tone.Time('16n').toSeconds();
+      const duration = stepSeconds * cell.mergeLength;
+      const group = getMergeGroup(t, step);
+      const pitches = group ? group.pitches : [cell.pitch];
+      const allSamePitch = pitches.every(p => p === pitches[0]);
+
+      if (allSamePitch) {
+        synths[t].triggerAttackRelease(pitches[0], duration, time);
+        continue;
+      }
+
+      const synthType = getSynthType(t);
+      const glideCapable = synthType === 'Synth' || synthType === 'AMSynth' || synthType === 'FMSynth' || synthType === 'DuoSynth';
+
+      if (!glideCapable) {
+        synths[t].triggerAttackRelease(pitches[0], duration, time);
+        continue;
+      }
+
+      const synth = synths[t];
+      const isPoly = synth instanceof Tone.PolySynth;
+      const glideVoice = isPoly ? getGlideSynth(t) : (synth as Tone.Synth | Tone.AMSynth | Tone.FMSynth | Tone.DuoSynth);
+
+      glideVoice.triggerAttack(pitches[0], time);
+
+      for (let i = 1; i < pitches.length; i++) {
+        const freq = Tone.Frequency(pitches[i]).toFrequency();
+        const rampTargetTime = time + (i + 1) * stepSeconds;
+        glideVoice.frequency.exponentialRampToValueAtTime(freq, rampTargetTime);
+      }
+
+      glideVoice.triggerRelease(time + duration);
     }
     Tone.Draw.schedule(() => {
       if (onStepCallback) {
@@ -212,8 +272,12 @@ export const Scheduler = {
     for (const a of analysers) {
       a?.dispose();
     }
+    for (const gs of glideSynths) {
+      gs?.dispose();
+    }
     synths.length = 0;
     analysers.length = 0;
+    glideSynths.length = 0;
     trackSynthTypes.length = 0;
   }
 };

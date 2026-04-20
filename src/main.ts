@@ -1,5 +1,5 @@
 import './style.css';
-import { state, toggleCell, moveCursor, seekToStep, addStanza, addTrack, setPlaying, setPaused, setBPM, removeStanza, TRACK_COLORS, computeTrackNotes, SCALES, SCALE_IDS, NOTE_NAMES, setTrackConfig, DEFAULT_NOTES, initTracks, setLoopRange } from './state.ts';
+import { state, toggleCell, moveCursor, seekToStep, addStanza, addTrack, setPlaying, setPaused, setBPM, removeStanza, TRACK_COLORS, computeTrackNotes, SCALES, SCALE_IDS, NOTE_NAMES, setTrackConfig, DEFAULT_NOTES, initTracks, setLoopRange, isConsumedStep, mergeCells, unmergeCells, setMergeMode, getMergeAnchorForStep } from './state.ts';
 import { Renderer } from './renderer.ts';
 import { Scheduler, setOnStep, addSynth, synths, SYNTH_TYPES, getSynthType, getEnvelope, setEnvelope, swapSynth, getWaveform, previewNote } from './scheduler.ts';
 import type { SynthTypeId } from './scheduler.ts';
@@ -55,7 +55,11 @@ function deserializeToState(data: ProjectData): void {
     return {
       name: t.name,
       color: t.color,
-      cells: t.cells,
+      cells: t.cells.map(c => ({
+        active: c.active,
+        pitch: c.pitch,
+        mergeLength: c.mergeLength ?? 1,
+      })),
       config: t.config ?? { scale: 'pentatonic', root: 0, octaveLow: 4, octaveHigh: 4 },
     };
   });
@@ -78,6 +82,9 @@ type DragMode = 'none' | 'playhead' | 'loop-start' | 'loop-end'
 
 let dragMode: DragMode = 'none'
 let dragMoved = false
+let longPressTimer: number | null = null;
+let longPressFired = false;
+let pendingCellHit: { track: number; step: number; clickedPitch: string } | null = null;
 
 function canvasCoords(e: PointerEvent): { x: number; y: number } {
   const rect = canvas.getBoundingClientRect()
@@ -95,7 +102,13 @@ function stepFromY(y: number): number {
 canvas.addEventListener('pointerdown', (e) => {
   const { x, y } = canvasCoords(e);
   const hit = Renderer.handlePointer(x, y);
-  if (!hit) return;
+  if (!hit) {
+    if (state.mergeMode) {
+      setMergeMode(false);
+      Renderer.markDirty();
+    }
+    return;
+  }
 
   if (hit.type === 'playhead-handle') {
     dragMode = 'playhead'
@@ -114,18 +127,56 @@ canvas.addEventListener('pointerdown', (e) => {
   if (hit.type === 'cell') {
     const track = hit.track as number;
     const step = hit.step as number;
-    const cell = state.tracks[track].cells[step];
     const clickedPitch = pitchFromCellX(track, hit.localX as number);
-    if (cell.active && cell.pitch === clickedPitch) {
-      cell.active = false;
-    } else {
-      cell.active = true;
-      cell.pitch = clickedPitch;
+    
+    if (state.mergeMode) {
+      if (track === state.mergeAnchor?.track) {
+        const anchor = state.mergeAnchor;
+        const anchorCell = state.tracks[anchor.track].cells[anchor.step];
+        const groupEnd = anchor.step + anchorCell.mergeLength - 1;
+        
+        if (step === anchor.step - 1 || step === groupEnd + 1) {
+          if (mergeCells(track, step)) {
+            Scheduler.rebuildSequence();
+            Renderer.markDirty();
+            return;
+          }
+        }
+      }
+      setMergeMode(false);
+      Renderer.markDirty();
+      return;
     }
-    state.cursorTrack = track;
-    state.cursorStep = step;
-    moveCursor(0, 1);
-    Renderer.markDirty();
+    
+    pendingCellHit = { track, step, clickedPitch };
+    longPressFired = false;
+    
+    longPressTimer = window.setTimeout(() => {
+      longPressFired = true;
+      pendingCellHit = null;
+      
+      const currentCell = state.tracks[track].cells[step];
+      if (isConsumedStep(track, step)) {
+        const anchorStep = getMergeAnchorForStep(track, step);
+        unmergeCells(track, anchorStep);
+        Scheduler.rebuildSequence();
+        Renderer.markDirty();
+        return;
+      }
+      
+      if (currentCell.mergeLength > 1) {
+        unmergeCells(track, step);
+        Scheduler.rebuildSequence();
+        Renderer.markDirty();
+        return;
+      }
+      
+      if (currentCell.active) {
+        setMergeMode(true, { track, step });
+        Renderer.markDirty();
+      }
+    }, 350);
+    
     return;
   }
 
@@ -184,6 +235,30 @@ canvas.addEventListener('pointermove', (e) => {
 });
 
 canvas.addEventListener('pointerup', () => {
+  if (longPressTimer !== null) {
+    clearTimeout(longPressTimer);
+    longPressTimer = null;
+  }
+  
+  if (!longPressFired && pendingCellHit) {
+    const { track, step, clickedPitch } = pendingCellHit;
+    const cell = state.tracks[track].cells[step];
+    if (cell.active && cell.pitch === clickedPitch) {
+      if (cell.mergeLength > 1) {
+        unmergeCells(track, step);
+      }
+      cell.active = false;
+    } else {
+      cell.active = true;
+      cell.pitch = clickedPitch;
+    }
+    state.cursorTrack = track;
+    state.cursorStep = step;
+    moveCursor(0, 1);
+    Renderer.markDirty();
+    pendingCellHit = null;
+  }
+  
   if (!dragMoved) {
     if (dragMode === 'loop-start') {
       setLoopRange(0, state.loopEnd)
